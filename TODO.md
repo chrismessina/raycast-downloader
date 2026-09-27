@@ -28,16 +28,3 @@ shipped as is because the windows are short and the fix belongs here, in the sha
 
 **Done when:** a test kills the runner between spawn and curl's first byte, and no file under
 `statusDir` or the destination folder contains the header value.
-
-## Repro needed: a `.part.claim` seen after a completed download
-
-On 2026-09-26, Finder showed `Mercury Mercury Checking 7791 2026-08.pdf.part.claim` (132 bytes)
-next to the finished PDF, both timestamped 3:43:31 PM. The download came from Mercury's Open
-Statement PDF (`uniquePath(dir, name, { reserve: true })`, then `startDownload`). Minutes later
-the file was gone.
-
-The runner releases the claim straight after the rename that publishes the file (`clearPartialState`
-then `releasePath()` in `src/runner.ts`), so this may be Finder drawing the listing between those
-two calls. It may also be a release that skipped: `releasePartialClaim` returns without deleting
-when the claim's token doesn't match `payload.claimToken`. Try to reproduce by downloading into a
-folder watched with `fswatch`, and check whether the claim outlives the `completed` status write.
