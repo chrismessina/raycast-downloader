@@ -23,6 +23,11 @@ export type DownloadErrorCode =
   | "disk_full"
   | "permission"
   | "url_expired"
+  /**
+   * The server accepted the request but has not produced the file yet
+   * (HTTP 202). Retryable: the same request succeeds once it is ready.
+   */
+  | "pending"
   | "integrity"
   /** Caller-supplied input was rejected before any request was made. */
   | "validation"
@@ -81,6 +86,7 @@ const RETRYABLE: ReadonlySet<DownloadErrorCode> = new Set<DownloadErrorCode>([
   "http_server",
   "rate_limited",
   "url_expired",
+  "pending",
   // Bytes are already on disk, so a retry resumes rather than restarting.
   "interrupted",
   // `runner_failed` is deliberately absent: the helper crashed on startup, and

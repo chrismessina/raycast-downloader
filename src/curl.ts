@@ -146,7 +146,12 @@ export function buildCurlConfig(options: CurlConfigOptions): string {
   // `-C -` asks curl to work out the offset from the existing file.
   if (resume) lines.push("continue-at = -");
   if (limitRateBytes !== undefined) lines.push(`limit-rate = ${limitRateBytes}`);
-  if (dumpHeaderPath) lines.push(`dump-header = "${escapeConfigValue(dumpHeaderPath)}"`);
+  if (dumpHeaderPath) {
+    lines.push(`dump-header = "${escapeConfigValue(dumpHeaderPath)}"`);
+    // Through a proxy, curl dumps the tunnel's "200 Connection established"
+    // block too, and the runner would read it as the origin's answer.
+    lines.push("suppress-connect-headers");
+  }
   // Only meaningful alongside `continue-at`, which is what generates the Range
   // this validates. Harmless without one: a server ignores `If-Range` on an
   // unranged request.
@@ -331,6 +336,8 @@ export interface ClassifyCurlInput {
   cancelled?: boolean;
   /** Whether the request was made with redirects enabled. Default true. */
   followRedirects?: boolean;
+  /** Whether the request resumed an existing partial (sent a Range). Default false. */
+  resumed?: boolean;
 }
 
 /**
@@ -341,7 +348,7 @@ export interface ClassifyCurlInput {
  * "curl exited 22".
  */
 export function classifyCurlFailure(input: ClassifyCurlInput): DownloadError {
-  const { exitCode, signal, httpCode, stderrTail, cancelled, followRedirects = true } = input;
+  const { exitCode, signal, httpCode, stderrTail, cancelled, followRedirects = true, resumed = false } = input;
 
   if (cancelled || signal === "SIGTERM" || signal === "SIGINT") {
     return new DownloadError("cancelled", "Download cancelled.", { exitCode, signal });
@@ -365,6 +372,25 @@ export function classifyCurlFailure(input: ClassifyCurlInput): DownloadError {
       unfollowedRedirectMessage(httpCode, followRedirects),
       { httpStatus: httpCode, exitCode, signal },
     );
+  }
+
+  // A resumed request answered with a whole body that curl did NOT refuse:
+  // measured, it exits 0 when the body's length equals the resume offset
+  // ("already downloaded") and leaves the partial as it was. Same meaning as
+  // exit 33 — the partial cannot be trusted to be this file — same message.
+  // A 2xx only reaches here when the runner refused it as not-the-file (202,
+  // 204, 205, or a 206 nobody asked for). Same reason as the 3xx branch above:
+  // curl exited 0, so EXIT_CODES has nothing to say about it.
+  if (exitCode === 0 && httpCode !== undefined && httpCode >= 200 && httpCode < 300) {
+    if (resumed && httpCode !== 206) {
+      return new DownloadError(EXIT_CODES[33].code, EXIT_CODES[33].message, { httpStatus: httpCode, exitCode, signal });
+    }
+    const code = httpCode === 202 ? "pending" : httpCode === 206 ? "integrity" : "http_client";
+    return new DownloadError(code, unusableSuccessMessage(httpCode), {
+      httpStatus: httpCode,
+      exitCode,
+      signal,
+    });
   }
 
   if (httpCode !== undefined && httpCode >= 400) {
@@ -398,6 +424,17 @@ function unfollowedRedirectMessage(status: number, followRedirects: boolean): st
   if (status === 304) return "The server reported the file as unchanged (HTTP 304) and sent no content.";
   if (!followRedirects) return `The server redirected (HTTP ${status}) but redirects are disabled.`;
   return `The server returned a redirect that could not be followed (HTTP ${status}).`;
+}
+
+function unusableSuccessMessage(status: number): string {
+  switch (status) {
+    case 202:
+      return "The server accepted the request but has not produced the file yet (HTTP 202). Try again later.";
+    case 206:
+      return "The server sent only part of the file (HTTP 206).";
+    default:
+      return `The server returned no file (HTTP ${status}).`;
+  }
 }
 
 function httpErrorMessage(status: number): string {

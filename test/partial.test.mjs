@@ -5,7 +5,7 @@
  * neither of which an end-to-end download test can produce on demand.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -15,6 +15,8 @@ import {
   claimPath,
   markPartialUnsafe,
   mayResume,
+  parseFinalStatus,
+  parseUnsatisfiedRangeTotal,
   parseValidators,
   partialClaimHolder,
   readPartialState,
@@ -248,4 +250,66 @@ test("parseValidators: 1xx interim blocks precede the final one and do not distu
 test("parseValidators: a validator only an interim block carried is not kept", () => {
   const dump = 'HTTP/1.1 103 Early Hints\r\nETag: "early"\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n';
   assert.deepEqual(parseValidators(dump), {});
+});
+
+test("parseUnsatisfiedRangeTotal reads only the final block's unsatisfied range", () => {
+  assert.equal(parseUnsatisfiedRangeTotal("HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */10\r\n\r\n"), 10);
+  assert.equal(parseUnsatisfiedRangeTotal("HTTP/2 416\ncontent-range:  BYTES */10 \n"), 10);
+  // A redirect's or an interim response's header never describes the final one.
+  assert.equal(
+    parseUnsatisfiedRangeTotal("HTTP/1.1 302 Found\nContent-Range: bytes */10\n\nHTTP/1.1 416 Nope\n\n"),
+    undefined,
+  );
+  assert.equal(parseUnsatisfiedRangeTotal("HTTP/1.1 100 Continue\n\nHTTP/1.1 416 Nope\nContent-Range: bytes */7\n"), 7);
+  // A satisfied range is not a complete length claim.
+  assert.equal(parseUnsatisfiedRangeTotal("HTTP/1.1 206 Partial\nContent-Range: bytes 0-4/10\n"), undefined);
+  // Contradictory totals prove nothing, whichever comes last.
+  assert.equal(
+    parseUnsatisfiedRangeTotal("HTTP/1.1 416 Nope\nContent-Range: bytes */20\nContent-Range: bytes */10\n"),
+    undefined,
+  );
+  assert.equal(
+    parseUnsatisfiedRangeTotal("HTTP/1.1 416 Nope\nContent-Range: bytes */10\nContent-Range: garbage\n"),
+    undefined,
+  );
+});
+
+test("parseFinalStatus: the last block's status, and whether its headers are all in", () => {
+  assert.equal(parseFinalStatus(""), undefined);
+  assert.deepEqual(parseFinalStatus("HTTP/1.1 302 Found\r\nLocation: /x\r\n\r\nHTTP/2 200\r\n\r\n"), {
+    status: 200,
+    complete: true,
+  });
+  // A redirect hop alone, or a block still arriving, describes nothing on disk yet.
+  assert.deepEqual(parseFinalStatus("HTTP/1.1 206 Partial Content\r\nETag: \"v1\""), { status: 206, complete: false });
+  // curl writes each header line whole, so a block cut off mid-headers ends in
+  // a newline too — that is not the blank line that closes it.
+  assert.deepEqual(parseFinalStatus("HTTP/1.1 206 Partial Content\r\nETag: \"v1\"\r\n"), { status: 206, complete: false });
+  assert.deepEqual(parseFinalStatus("HTTP/1.1 206 Partial Content\r\n"), { status: 206, complete: false });
+  // Chunked trailers arrive through the same dump after the headers ended;
+  // they do not make the response's headers incomplete again.
+  assert.deepEqual(parseFinalStatus("HTTP/1.1 200 OK\r\nETag: \"v2\"\r\n\r\nDigest: x\r\n"), { status: 200, complete: true });
+});
+
+test("markPartialUnsafe that cannot write its marker removes the stale state instead", () => {
+  // Disk full, say: the marker cannot be written, but an unlink still works.
+  // Leaving the old state would keep a contaminated partial resumable.
+  const dir = mkdtempSync(join(tmpdir(), "partial-unsafe-"));
+  try {
+    const partPath = join(dir, "file.bin.part");
+    const url = "https://example.com/file.bin";
+    writeFileSync(partPath, "junk");
+    assert.equal(
+      writePartialState(partPath, { v: 1, urlHash: urlFingerprint(url), resourceHash: resourceFingerprint(url), etag: '"v1"' }),
+      true,
+    );
+    // A directory where the temp file must go makes the write fail.
+    mkdirSync(`${statePath(partPath)}.${process.pid}.tmp`);
+
+    assert.equal(markPartialUnsafe(partPath), false);
+    assert.equal(existsSync(statePath(partPath)), false);
+    assert.equal(mayResume(readPartialState(partPath), url), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

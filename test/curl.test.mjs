@@ -30,6 +30,12 @@ test("config carries url and output as quoted values", () => {
   assert.match(config, /^output = "\/tmp\/a\.mp4\.part"$/m);
 });
 
+test("a header dump never carries a proxy's CONNECT response", () => {
+  // Its "200 Connection established" block would read as the origin's answer.
+  const config = buildCurlConfig({ url: "https://e.com/a", outputPath: "/tmp/a", dumpHeaderPath: "/tmp/a.headers" });
+  assert.match(config, /^suppress-connect-headers$/m);
+});
+
 test("config uses THROUGHPUT timeouts and no wall-clock cap by default", () => {
   // --max-time counts machine sleep; a closed laptop would fail a healthy transfer.
   const config = buildCurlConfig({ url: "https://e.com/a", outputPath: "/tmp/a" });
@@ -207,6 +213,30 @@ test("HTTP status wins over the generic exit code", () => {
   assert.equal(error.code, "forbidden");
   assert.equal(error.httpStatus, 403);
   assert.match(error.message, /expired|permission/i);
+});
+
+test("a refused 2xx names its status instead of 'curl exit 0'", () => {
+  // curl exits 0 on these; the runner refuses them as not-the-file.
+  const accepted = classifyCurlFailure({ exitCode: 0, httpCode: 202 });
+  // Not ready yet is not a client error: the same request succeeds later.
+  assert.equal(accepted.code, "pending");
+  assert.equal(accepted.retryable, true);
+  assert.match(accepted.message, /HTTP 202/);
+  const noContent = classifyCurlFailure({ exitCode: 0, httpCode: 204 });
+  assert.match(noContent.message, /HTTP 204/);
+  const fragment = classifyCurlFailure({ exitCode: 0, httpCode: 206 });
+  assert.equal(fragment.code, "integrity");
+  assert.match(fragment.message, /HTTP 206/);
+});
+
+test("a resumed whole body curl exited 0 on reads as not resumable, and is retryable", () => {
+  // curl's "already downloaded": a 200 as long as the partial, which it keeps.
+  const error = classifyCurlFailure({ exitCode: 0, httpCode: 200, resumed: true });
+  assert.equal(error.code, "network");
+  assert.equal(error.retryable, true);
+  assert.match(error.message, /resum/i);
+  // Resumed wins over the fresh-request mapping for a 202 too.
+  assert.equal(classifyCurlFailure({ exitCode: 0, httpCode: 202, resumed: true }).code, "network");
 });
 
 test("410 maps to an expired link and is retryable", () => {

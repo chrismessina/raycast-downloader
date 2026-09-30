@@ -215,10 +215,16 @@ export function writePartialState(partPath: string, state: PartialState): boolea
  * could not be persisted, which is a worse failure than it looks — the caller
  * then has a contaminated file that nothing on disk warns about, and must say
  * so in the status instead.
+ *
+ * On that failure the existing state is removed: it vouches for the bytes as
+ * they WERE, and with no state at all `mayResume` refuses. A full disk refuses
+ * the write but still allows the unlink.
  */
 export function markPartialUnsafe(partPath: string): boolean {
   const existing = readPartialState(partPath) ?? { v: 1 as const };
-  return writePartialState(partPath, { ...existing, unsafe: true });
+  if (writePartialState(partPath, { ...existing, unsafe: true })) return true;
+  clearPartialState(partPath);
+  return false;
 }
 
 export function clearPartialState(partPath: string): void {
@@ -439,6 +445,9 @@ function claimOwnerAlive(claim: PartialClaim): boolean {
   return true;
 }
 
+/** A response's status line in a curl header dump — HTTP/1.x or HTTP/2 — which starts a new block. */
+const STATUS_LINE = /^HTTP\/\d(?:\.\d)?\s+(\d{3})/i;
+
 /**
  * Pull the `If-Range` validators out of a curl header dump.
  *
@@ -465,7 +474,7 @@ export function parseValidators(dump: string): { etag?: string; lastModified?: s
     // and answers 200 instead of 206, curl refuses to append (exit 33), and the
     // partial is reset — so the resume quietly becomes a full re-download of a
     // file that may be hundreds of megabytes.
-    if (/^HTTP\/\d(?:\.\d)?\s+\d{3}/i.test(line)) {
+    if (STATUS_LINE.test(line)) {
       result = {};
       continue;
     }
@@ -487,4 +496,59 @@ export function parseValidators(dump: string): { etag?: string; lastModified?: s
   }
 
   return result;
+}
+
+/**
+ * The status of the LAST response block in a curl header dump, and whether that
+ * block's headers are complete (terminated by the blank line), or undefined when
+ * no response has been dumped yet.
+ *
+ * The runner's close handler has curl's own `http_code`; a cancellation, and the
+ * meter watching a transfer still in flight, have only this.
+ */
+export function parseFinalStatus(dump: string): { status: number; complete: boolean } | undefined {
+  let status: number | undefined;
+  let complete = false;
+  // The last element is never a finished line: it is either what follows the
+  // final newline (so "" for every header line curl has written whole) or a
+  // line still being written. Counting that "" as the blank line would call a
+  // block complete after its first header.
+  for (const line of dump.split(/\r?\n/).slice(0, -1)) {
+    const match = STATUS_LINE.exec(line);
+    if (match) {
+      status = Number(match[1]);
+      complete = false;
+    // The FIRST blank line after the status line ends its headers. Chunked
+    // trailers can follow it in the same dump; they do not reopen the block.
+    } else if (status !== undefined && line === "") {
+      complete = true;
+    }
+  }
+  return status === undefined ? undefined : { status, complete };
+}
+
+/**
+ * The complete length a 416 reported, from the LAST response block's
+ * `Content-Range: bytes * /N` (RFC 9110 §14.4), or undefined if it gave none.
+ *
+ * This is how a resumed request learns the partial is already the whole file:
+ * asking for the range that starts at byte N of an N-byte resource is
+ * unsatisfiable by definition. Same boundary rule as `parseValidators` — an
+ * earlier hop's header never describes the final response.
+ */
+export function parseUnsatisfiedRangeTotal(dump: string): number | undefined {
+  // Every Content-Range in the final block, not the last one: this result is
+  // evidence the partial is complete, and two disagreeing fields are none.
+  let totals: (number | undefined)[] = [];
+  for (const line of dump.split(/\r?\n/)) {
+    if (STATUS_LINE.test(line)) {
+      totals = [];
+      continue;
+    }
+    if (!/^content-range:/i.test(line)) continue;
+    const range = /^content-range:\s*bytes\s+\*\/(\d+)\s*$/i.exec(line);
+    totals.push(range ? Number(range[1]) : undefined);
+  }
+  // No field, a malformed one, or two that disagree all come out undefined.
+  return totals.every((total) => total === totals[0]) ? totals[0] : undefined;
 }
