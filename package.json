@@ -1,6 +1,6 @@
 {
   "name": "@chrismessina/raycast-downloader",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "Downloads for Raycast extensions that survive the window closing: detached transfers, resumable via HTTP Range, with safe paths, progress and history",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

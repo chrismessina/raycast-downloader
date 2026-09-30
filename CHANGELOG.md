@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 **A failed download no longer leaves an orphaned `.part.state`.** A request that failed
 before its first byte (a 403, say) removed its empty `.part` and then wrote a `.state`
