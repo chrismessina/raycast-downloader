@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+**A failed download no longer leaves an orphaned `.part.state`.** A request that failed
+before its first byte (a 403, say) removed its empty `.part` and then wrote a `.state`
+describing it. A terminal attempt now keeps a `.part` only when the file's own response
+wrote its bytes, and removes its `.state` along with it (best effort).
+
+**Status handling follows what curl actually does, not its exit code.** Measured, curl
+exits 0 on each of these:
+
+- **202, 204, 205, and a 206 to an unranged request** are no longer published; their body
+  is discarded. A 202 fails with the new code `pending`.
+- **A resumed request answered with a whole body** is no longer published as complete
+  when it matches the partial's length (curl's "already downloaded", which kept the OLD
+  version when `If-Range` produced the 200); the partial is cleared instead.
+- **A 416 to a resume whose `Content-Range: bytes */N` equals the partial** publishes it
+  rather than failing on every retry. Any other resumed 416 clears the partial.
+- **An empty 200 fails** whatever `expectedBytes` or `sizeCheck` say, except
+  `expectedBytes: 0`.
+
+**Provenance is recorded only from the response that wrote the bytes.** A 403 to a
+resume (a lapsed signed URL), a refused 200, or a redirect no longer overwrites the
+partial's validators, so the signed-URL recovery keeps its resume. The mid-transfer
+record waits for that response's complete headers, and the header dump now omits a
+proxy's CONNECT response. With `resume: false`, an existing partial is cleared before the
+transfer starts.
+
+Consumer notice: **`DownloadErrorCode` gains `"pending"`** (retryable). Callers that
+switch exhaustively on `DownloadErrorCode`, or key a `Record` by it, will see a compile
+error, which is the intent.
+
 ## 0.1.5
 
 **A redirect's `ETag` no longer describes bytes it never served.**

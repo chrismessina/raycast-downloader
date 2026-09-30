@@ -55,7 +55,8 @@ be appended to is a separate question, answered by their [provenance](#provenanc
 their number. Those jobs conflict: the bytes
 are only resumable if every byte in the file genuinely belongs to the wanted file, so anything a
 failed attempt wrote — an error page, a redirect body — must be rolled back before the file is left
-behind, and a rollback that cannot be verified means the file must be discarded instead.
+behind, and a rollback that cannot be verified means the file must be discarded instead — or,
+when even deletion is denied, marked unsafe so no later attempt resumes onto it.
 Publishing is a rename of this file, which is what makes the final name appear only once the
 content behind it is whole.
 

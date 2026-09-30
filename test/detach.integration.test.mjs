@@ -319,9 +319,17 @@ test("a request that fails before its first byte leaves no empty .part behind", 
 
     assert.ok(final, "failed download never settled");
     assert.equal(final.state, "failed");
+    // A 404, not a DNS or TLS failure that would pass every check below too.
+    assert.equal(final.error?.httpStatus, 404);
+    assert.equal(final.error?.code, "not_found");
     // curl creates the output file on open, so without cleanup a 404 deposits a
     // 0-byte `.part` in the user's Downloads folder that nothing will resume.
     assert.equal(existsSync(`${outputPath}.part`), false, "an empty .part must not be left behind");
+    // …nor anything describing it. A `.state` beside a `.part` that no longer
+    // exists is an orphan the user has no way to account for.
+    for (const sidecar of [".state", ".claim", ".headers"]) {
+      assert.equal(existsSync(`${outputPath}.part${sidecar}`), false, `an orphaned .part${sidecar} must not be left behind`);
+    }
     assert.equal(existsSync(outputPath), false, "a failure must never publish a final file");
   } finally {
     rmSync(dir, { recursive: true, force: true });

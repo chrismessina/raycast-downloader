@@ -497,8 +497,11 @@ test("a weak ETag does not inherit a stale strong one through the state file", a
   const sockets = new Set();
   const server = createServer((req, res) => {
     // Weak validator, and a body that stays open so the transfer can be caught
-    // mid-flight with its state still on disk.
+    // mid-flight with its state still on disk. The first chunk is large enough
+    // for curl to flush: a cancelled attempt whose `.part` is still empty keeps
+    // nothing, so there would be no state here to inspect.
     res.writeHead(200, { "Content-Length": 1_000_000, ETag: 'W/"weak"', "Accept-Ranges": "bytes" });
+    res.write(Buffer.alloc(65_536, "."));
     const timer = setInterval(() => res.write("."), 100);
     res.on("close", () => clearInterval(timer));
   });
