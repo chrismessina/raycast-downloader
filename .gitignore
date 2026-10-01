@@ -6,6 +6,8 @@ dist/
 # Working notes and local agent config — never on the public repo.
 # HANDOFF.md carries machine-absolute paths and session ids.
 HANDOFF.md
+# Per-consumer handoffs — machine paths, and kept out of every extension root.
+handoffs/
 .claude/settings.local.json
 # Working plans — branch state and task ordering, same shape as HANDOFF.md.
 docs/plans/
