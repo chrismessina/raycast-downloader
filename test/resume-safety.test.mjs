@@ -539,3 +539,56 @@ test("a weak ETag does not inherit a stale strong one through the state file", a
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A 202 to a resume is "not ready yet", not "the server refused the range". The
+// bytes already on disk are still a valid prefix, so they must survive for the
+// retry. Greptile on raycast/extensions#31922 found the range-refused reset
+// catching every non-206 2xx, 202 included.
+test("a 202 to a resume keeps the partial, and the next attempt resumes from it", async () => {
+  const dir = tempDir();
+  const ranges = [];
+  let ready = false;
+  const server = createServer((req, res) => {
+    ranges.push(req.headers.range ?? "<none>");
+    if (!ready) {
+      const body = '{"status":"processing"}';
+      res.writeHead(202, { "Content-Type": "application/json", "Content-Length": body.length });
+      res.end(body);
+      return;
+    }
+    const start = Number(/bytes=(\d+)-/.exec(req.headers.range ?? "")?.[1] ?? 0);
+    const slice = BODY.slice(start);
+    res.writeHead(start ? 206 : 200, {
+      ...(start ? { "Content-Range": `bytes ${start}-${BODY.length - 1}/${BODY.length}` } : {}),
+      "Content-Length": slice.length,
+      ETag: '"v1"',
+    });
+    res.end(slice);
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/file`;
+    const outputPath = join(dir, "out.bin");
+    const partPath = `${outputPath}.part`;
+    writeFileSync(partPath, BODY.slice(0, 8));
+    writePartialState(partPath, { v: 1, urlHash: urlFingerprint(url), etag: '"v1"' });
+
+    const first = await startDownload({ url, outputPath, statusDir: dir, resume: true });
+    const pending = await waitForTerminal(first.id, dir);
+    assert.equal(pending.state, "failed");
+    assert.equal(pending.error?.code, "pending");
+    assert.equal(pending.partialUnsafe, undefined);
+    assert.equal(readFileSync(partPath, "utf8"), BODY.slice(0, 8), "the prefix must survive the 202");
+    assert.equal(readPartialState(partPath)?.etag, '"v1"', "the validator must survive the 202");
+
+    ready = true;
+    const second = await startDownload({ url, outputPath, statusDir: dir, resume: true });
+    const done = await waitForTerminal(second.id, dir);
+    assert.equal(done.state, "completed", `error: ${JSON.stringify(done.error)}`);
+    assert.equal(readFileSync(outputPath, "utf8"), BODY);
+    assert.deepEqual(ranges, ["bytes=8-", "bytes=8-"], "both attempts must resume from the prefix");
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

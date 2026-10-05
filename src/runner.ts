@@ -537,6 +537,10 @@ function main(): void {
     // failure, it is retained, re-recorded, and 416s again on every retry.
     const alreadyComplete =
       exitCode === 0 &&
+      //
+      // A 202 is excluded: it says the file is not ready yet, which says nothing
+      // against the bytes already on disk. `settlePartial` below rolls back any
+      // 202 body curl appended, and the retry resumes onto the real prefix.
       httpCode === 416 &&
       resume &&
       parseUnsatisfiedRangeTotal(readHeaderDump(payload.partPath) ?? "") === existingBytes &&
@@ -568,7 +572,11 @@ function main(): void {
         resume &&
         httpCode !== undefined &&
         (httpCode === 416 ||
-          (httpCode >= 200 && httpCode < 300 && httpCode !== 206 && (exitCode === 33 || exitCode === 0)));
+          (httpCode >= 200 &&
+            httpCode < 300 &&
+            httpCode !== 202 &&
+            httpCode !== 206 &&
+            (exitCode === 33 || exitCode === 0)));
       if (rangeRefused) {
         if (!resetPartial(payload.partPath)) {
           failUnsafePartial(

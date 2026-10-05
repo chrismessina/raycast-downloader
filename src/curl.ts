@@ -380,6 +380,12 @@ export function classifyCurlFailure(input: ClassifyCurlInput): DownloadError {
   // exit 33 — the partial cannot be trusted to be this file — same message.
   // A 2xx only reaches here when the runner refused it as not-the-file (202,
   // 204, 205, or a 206 nobody asked for). Same reason as the 3xx branch above:
+  // A 202 means "not ready yet" whether or not this was a resume, and whether curl
+  // exited 0 (took the body) or 33 (refused it as an answer to a range). The
+  // runner keeps a resumed partial for it, so it must not read as "cannot resume".
+  if (httpCode === 202 && (exitCode === 0 || exitCode === 33)) {
+    return new DownloadError("pending", unusableSuccessMessage(202), { httpStatus: 202, exitCode, signal });
+  }
   // curl exited 0, so EXIT_CODES has nothing to say about it.
   if (exitCode === 0 && httpCode !== undefined && httpCode >= 200 && httpCode < 300) {
     if (resumed && httpCode !== 206) {

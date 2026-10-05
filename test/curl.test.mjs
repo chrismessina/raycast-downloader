@@ -235,8 +235,17 @@ test("a resumed whole body curl exited 0 on reads as not resumable, and is retry
   assert.equal(error.code, "network");
   assert.equal(error.retryable, true);
   assert.match(error.message, /resum/i);
-  // Resumed wins over the fresh-request mapping for a 202 too.
-  assert.equal(classifyCurlFailure({ exitCode: 0, httpCode: 202, resumed: true }).code, "network");
+});
+
+test("a 202 is pending whether or not it answered a resume", () => {
+  // The runner keeps a resumed partial for a 202, so it must not read as "cannot resume".
+  for (const exitCode of [0, 33]) {
+    for (const resumed of [false, true]) {
+      const error = classifyCurlFailure({ exitCode, httpCode: 202, resumed });
+      assert.equal(error.code, "pending", `exit ${exitCode}, resumed ${resumed}`);
+      assert.equal(error.retryable, true);
+    }
+  }
 });
 
 test("410 maps to an expired link and is retryable", () => {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1
+
+**A 202 to a resumed download keeps the partial.** 0.2.0 treated any non-206 2xx answer to
+a resume as the server refusing the range, so a 202 ("not ready yet") reset the `.part`
+and threw away the bytes already downloaded, and reported it as `network` ("cannot resume").
+A resumed 202 now fails with `pending`, like a fresh one, and the partial is rolled back to
+what was on disk before the request, so the retry resumes.
+
 ## 0.2.0
 
 **A failed download no longer leaves an orphaned `.part.state`.** A request that failed
