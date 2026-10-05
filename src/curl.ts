@@ -8,10 +8,10 @@
  *
  * Two decisions here are load-bearing, both verified empirically:
  *
- *  1. The URL is passed in a 0600 CONFIG FILE, never on the command line.
- *     Signed URLs are bearer credentials; argv is world-readable via `ps`.
- *     Measured: with the URL as an argument it is visible in `ps`; via `-K` it
- *     is not.
+ *  1. The URL is passed as CONFIG on curl's stdin (`curl -K -`), never on the
+ *     command line and never in a file. Signed URLs are bearer credentials;
+ *     argv is world-readable via `ps`, and a file outlives a process killed
+ *     before it can delete it.
  *  2. Timeouts are THROUGHPUT-based (`--speed-limit`/`--speed-time`), not
  *     wall-clock (`--max-time`). `--max-time` counts machine sleep against the
  *     budget, so a laptop closed for ten minutes guarantees a spurious failure
@@ -99,10 +99,9 @@ export interface CurlConfigOptions {
 }
 
 /**
- * Build the contents of a curl config file (`curl -K <file>`).
+ * Build curl's config, which the runner writes to curl's stdin (`curl -K -`).
  *
- * Everything sensitive lives in this file, which the caller must create 0600 and
- * delete once curl has started.
+ * Everything sensitive lives in this text, so it must never reach argv or disk.
  */
 export function buildCurlConfig(options: CurlConfigOptions): string {
   const {
@@ -380,13 +379,13 @@ export function classifyCurlFailure(input: ClassifyCurlInput): DownloadError {
   // exit 33 — the partial cannot be trusted to be this file — same message.
   // A 2xx only reaches here when the runner refused it as not-the-file (202,
   // 204, 205, or a 206 nobody asked for). Same reason as the 3xx branch above:
+  // curl exited 0, so EXIT_CODES has nothing to say about it.
   // A 202 means "not ready yet" whether or not this was a resume, and whether curl
   // exited 0 (took the body) or 33 (refused it as an answer to a range). The
   // runner keeps a resumed partial for it, so it must not read as "cannot resume".
   if (httpCode === 202 && (exitCode === 0 || exitCode === 33)) {
     return new DownloadError("pending", unusableSuccessMessage(202), { httpStatus: 202, exitCode, signal });
   }
-  // curl exited 0, so EXIT_CODES has nothing to say about it.
   if (exitCode === 0 && httpCode !== undefined && httpCode >= 200 && httpCode < 300) {
     if (resumed && httpCode !== 206) {
       return new DownloadError(EXIT_CODES[33].code, EXIT_CODES[33].message, { httpStatus: httpCode, exitCode, signal });

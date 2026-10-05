@@ -22,7 +22,7 @@
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { assertCallerHeaders, hasCurl } from "./curl";
@@ -34,7 +34,6 @@ import {
   releasePartialClaim,
   updatePartialClaim,
 } from "./partial";
-import { writeSecretFile } from "./paths";
 import {
   assertSafeId,
   isAlive,
@@ -281,39 +280,31 @@ export async function startDownload(options: StartDownloadOptions): Promise<Down
     );
   }
 
-  // The payload carries the URL, so it goes in a 0600 file rather than argv,
-  // which `ps` exposes to every process on the machine. The runner unlinks it.
-  const payloadPath = join(statusDir, `${id}.payload.json`);
-  try {
-    writeSecretFile(
-      payloadPath,
-      JSON.stringify({
-        id,
-        url,
-        outputPath,
-        partPath,
-        filename,
-        statusDir,
-        headers,
-        expectedBytes,
-        resume,
-        followRedirects,
-        speedLimitBytes,
-        stallSeconds,
-        limitRateBytes,
-        sizeCheck,
-        claimToken,
-        meta,
-        notifyOnFinish,
-      }),
-    );
-  } catch (error) {
-    // Nothing has been spawned, so this claim belongs to nobody.
-    releasePartialClaim(partPath, claimToken);
-    throw error;
-  }
+  // The payload carries the URL and the caller's headers, both potentially
+  // bearer credentials, so it travels through the runner's stdin: never argv,
+  // which `ps` exposes to every process on the machine, and never a file, which
+  // a runner that dies before reading it would leave behind in plain text.
+  const payload = JSON.stringify({
+    id,
+    url,
+    outputPath,
+    partPath,
+    filename,
+    statusDir,
+    headers,
+    expectedBytes,
+    resume,
+    followRedirects,
+    speedLimitBytes,
+    stallSeconds,
+    limitRateBytes,
+    sizeCheck,
+    claimToken,
+    meta,
+    notifyOnFinish,
+  });
 
-  const child = spawn(process.execPath, [runner, payloadPath], {
+  const child = spawn(process.execPath, [runner], {
     // POSIX: makes the child a process-group leader so `kill(-pid)` reaches
     // curl too, and detaches it from the parent's session so it survives the
     // command being unloaded.
@@ -322,9 +313,25 @@ export async function startDownload(options: StartDownloadOptions): Promise<Down
     // would flash a black box at the user. `unref()` alone is what lets the
     // child outlive the parent there, and `taskkill /T` handles the tree.
     detached: process.platform !== "win32",
-    stdio: "ignore",
+    stdio: ["pipe", "ignore", "ignore"],
     windowsHide: true,
   });
+  // `end` closes the pipe, which is how the runner knows it has the whole thing.
+  // Settles once the last byte is in the kernel's pipe buffer, where it survives
+  // this command exiting. A payload bigger than that buffer is only partly there
+  // until the runner reads, so `startDownload` must not return before this: a
+  // command unloaded with the tail still in Node's memory hands the runner half
+  // a JSON document. A runner that dies first closes the pipe (EPIPE), which
+  // settles it too; that runner reports through its status, or the spawn `error`
+  // handler below does.
+  const delivered = new Promise<void>((resolve) => {
+    if (!child.stdin) return resolve();
+    child.stdin.once("finish", resolve);
+    child.stdin.once("error", () => resolve());
+    child.once("exit", () => resolve());
+    child.once("error", () => resolve());
+  });
+  child.stdin?.end(payload);
   child.unref();
 
   // One shape for both statuses this function may write: the spawn-failure
@@ -375,11 +382,6 @@ export async function startDownload(options: StartDownloadOptions): Promise<Down
     // may already have retried and taken a new claim, and releasing that one
     // would hand the path to a third attempt mid-transfer.
     releasePartialClaim(partPath, claimToken);
-    try {
-      unlinkSync(payloadPath);
-    } catch {
-      // The runner never started, so nothing else will remove it.
-    }
     const failedPid = child.pid;
     if (failedPid === undefined) return;
     try {
@@ -402,11 +404,6 @@ export async function startDownload(options: StartDownloadOptions): Promise<Down
   const pid = child.pid;
   if (pid === undefined) {
     releasePartialClaim(partPath, claimToken);
-    try {
-      unlinkSync(payloadPath);
-    } catch {
-      // Best effort.
-    }
     throw new DownloadError("unknown", "Could not start the download process.");
   }
 
@@ -427,6 +424,7 @@ export async function startDownload(options: StartDownloadOptions): Promise<Down
   // was told, instantly, that it had failed again. The runner writes its own
   // pid into its first status, so requiring the pid to match is a precise test
   // for "this attempt, not the last one".
+  await delivered;
   const seeded = await waitForStatus(id, statusDir, 3000, pid);
   // `spawnFailed` is checked because the seed would otherwise overwrite the
   // terminal failure the error handler just wrote with a `starting` status that

@@ -90,7 +90,7 @@ try {
 
 Three things worth copying exactly:
 
-**Log the typed `code`, never the URL or the raw cause.** A signed URL is a bearer credential — it travels in a 0600 file rather than argv for that reason, and a log line is the easiest way to undo that. `error.code`, `error.httpStatus` and `retryable` say everything actionable without carrying the secret.
+**Log the typed `code`, never the URL or the raw cause.** A signed URL is a bearer credential — it travels only through pipes, never argv or a file, for that reason, and a log line is the easiest way to undo that. `error.code`, `error.httpStatus` and `retryable` say everything actionable without carrying the secret.
 
 **Use `logger.debug` or `logger.log`, not `logger.error`.** This package takes no logger dependency — `@chrismessina/raycast-logger` is one you install yourself, and any logger works. If you use that one: as of v1.5.0 only `debug` and `log` are gated on the `verboseLogging` preference, while `error` and `warn` emit regardless, so an expected failure would print in every user's console. Check your own logger's gating before copying this.
 
@@ -147,7 +147,7 @@ Each of these exists because the obvious implementation is wrong in a way that o
 
 **Process identity is `(pid, startTime)`, never a bare pid.** macOS `kern.maxproc` is 16000, so pids get recycled. A liveness check of `kill(pid, 0)` alone answers "does *some* process have this pid" — and cancelling on that basis can `kill(-pid)` an unrelated process group.
 
-**Credentials never touch argv.** `ps` is world-readable. Measured: a URL passed as a curl argument is visible to any process on the machine; written to a `0600` config file and passed by path as `curl -K <file>`, it is not. The config is unlinked as soon as curl's first output byte proves it has been read. Signed URLs are bearer credentials, so the config-file channel is a requirement rather than a preference.
+**Credentials never touch argv or disk.** `ps` is world-readable: a URL passed as a curl argument is visible to any process on the machine. A file is no better if the process that should delete it is killed first. So the URL and your `headers` travel only through pipes: `startDownload` hands them to the runner on its stdin, and the runner hands curl its config the same way (`curl -K -`). Signed URLs and `Authorization` headers are bearer credentials, so this is a requirement rather than a preference.
 
 **Timeouts are throughput-based, not wall-clock.** `--max-time` counts machine sleep against the budget, so a laptop closed for ten minutes guarantees a spurious failure on a healthy transfer. `--speed-limit`/`--speed-time` measure actual throughput and are sleep-tolerant.
 
@@ -204,7 +204,7 @@ const outputPath = uniquePath(downloadsDir, filename, { reserve: true });
 
 A claim whose owner is provably dead is stolen, so a runner killed mid-transfer does not wedge the filename.
 
-**Four sidecar files may exist next to a `.part` while a download is live** — `.state`, `.claim`, `.headers` and, briefly at startup, `.curlrc`. They hold the provenance that makes a resume safe, the live-attempt claim, curl's header dump, and curl's config. The runner removes them when the download finishes, best effort — a denied unlink or a killed runner can leave one behind. If you enumerate the destination directory to show the user what is in flight, filter them out, stale ones included.
+**Three sidecar files may exist next to a `.part` while a download is live** — `.state`, `.claim` and `.headers`. They hold the provenance that makes a resume safe, the live-attempt claim, and curl's dump of the *response* headers (never your request headers). Before 0.2.1 a fourth, `.curlrc`, held curl's config briefly at startup. Atomic writes of `.state` and `.claim` also create short-lived `<name>.<pid>….tmp` neighbors; a filter should match the prefix, not an exact list. The runner removes them when the download finishes, best effort — a denied unlink or a killed runner can leave one behind. If you enumerate the destination directory to show the user what is in flight, filter them out, stale ones included.
 
 **Check `partialUnsafe` before you resume.** A failed download normally leaves its `.part` file in place precisely so a retry can resume from it. `partialUnsafe: true` on the status is the exception: the runner put something in that file that does not belong to the download and could not take it back out. **The package enforces this itself** — the same fact is recorded beside the file, and a later attempt resets the partial or fails rather than resuming onto it — so the flag is there for what you show the user, not for a rule you have to implement. The flag is absent on every ordinary status — including failures whose partial is perfectly resumable — and absence means "nothing was recorded", not "verified safe": a runner older than 0.1.3 cannot set it. Do not read `bytesDownloaded: 0` as the same signal; an empty response and a failed setup report zero too.
 

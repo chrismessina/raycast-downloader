@@ -82,7 +82,8 @@ test("runner releases an empty reservation when curl config validation fails", a
     );
 
     const result = await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [fileURLToPath(new URL("../dist/runner.bundle.js", import.meta.url)), payloadPath]);
+      const child = spawn(process.execPath, [fileURLToPath(new URL("../dist/runner.bundle.js", import.meta.url))]);
+      child.stdin.end(readFileSync(payloadPath));
       child.once("error", reject);
       child.once("close", (code) => resolve(code));
     });
@@ -103,7 +104,7 @@ test("advisory completion records the published size for crash reconciliation", 
     const curlPath = join(binDir, "curl");
     writeFileSync(
       curlPath,
-      `#!/usr/bin/env node\nconst fs=require("node:fs"); const config=fs.readFileSync(process.argv[3], "utf8"); const output=/^output = "(.*)"$/m.exec(config)[1]; fs.writeFileSync(output, Buffer.alloc(90, 7));`,
+      `#!/usr/bin/env node\nconst fs=require("node:fs"); const config=fs.readFileSync(0, "utf8"); const output=/^output = "(.*)"$/m.exec(config)[1]; fs.writeFileSync(output, Buffer.alloc(90, 7));`,
     );
     chmodSync(curlPath, 0o755);
     const outputPath = join(dir, "advisory.bin");
@@ -123,9 +124,10 @@ test("advisory completion records the published size for crash reconciliation", 
     );
 
     const result = await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [fileURLToPath(new URL("../dist/runner.bundle.js", import.meta.url)), payloadPath], {
+      const child = spawn(process.execPath, [fileURLToPath(new URL("../dist/runner.bundle.js", import.meta.url))], {
         env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` },
       });
+      child.stdin.end(readFileSync(payloadPath));
       child.once("error", reject);
       child.once("close", (code) => resolve(code));
     });

@@ -74,11 +74,14 @@ consumes B without being forced through a URL-shaped API. Don't make B depend on
 - **Process identity is `(pid, startedAtMs)`, never a bare pid** (`src/status.ts:247-250`, matched
   within a 2s tolerance). pids recycle; `kill(-pid)` on a bare pid can take out an unrelated
   process group. Note `startedAt` is a different field — the download's start, not the process's.
-- **Credentials never touch argv.** The URL goes into a `0600` curl config file and curl is
-  spawned as `curl -K <path>` (`src/runner.ts:154`) — argv carries the path, never the URL, because
-  `ps` is world-readable and signed URLs are bearer credentials. The runner unlinks the config as
-  soon as curl's first output byte proves it has been parsed, with a 2s fallback timer. Not stdin:
-  the child's stdin is `"ignore"`.
+- **Credentials never touch argv or disk.** The URL and the caller's headers (a signed URL, an
+  `Authorization: Bearer` token) travel through pipes only: `startDownload` writes the payload to
+  the runner's stdin (`src/detach.ts:326`), the runner reads it to EOF (`src/runner.ts:111`), and
+  curl is spawned as `curl -K -` with its config on stdin (`src/runner.ts:387`). `ps` is
+  world-readable, and a file outlives a process killed before it can unlink it. That is why
+  0.2.1 retired the old `<id>.payload.json` and `<part>.curlrc` files. Do not reintroduce a
+  file for either, not even a `0600` one: `test/secrets-off-disk.test.mjs` SIGKILLs a runner
+  mid-window and scans for the secret.
 - **Bytes land in `<outputPath>.part`, renamed only after size verification.** A truncated file
   must never look like a successful one.
 - **No breaking API changes.** Do not remove or rename an export or change a signature;

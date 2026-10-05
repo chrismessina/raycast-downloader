@@ -3,18 +3,12 @@
  * `startDownload` wait for THIS attempt's status, or accept whatever status
  * file happens to be sitting under the id already?
  *
- * argv: <payloadPath>
+ * stdin: the payload JSON, like the real runner.
  */
-import { renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const payload = JSON.parse(readFileSync(process.argv[2], "utf8"));
-try {
-  unlinkSync(process.argv[2]);
-} catch {
-  // Best effort, like the real runner.
-}
+const payload = JSON.parse(readFileSync(0, "utf8"));
 
 const target = join(payload.statusDir, `${payload.id}.json`);
 const delayMs = Number(process.env.FAKE_RUNNER_DELAY_MS ?? "800");

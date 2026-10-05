@@ -107,7 +107,8 @@ test("the copied bundle downloads a file end to end", { skip: !!process.env.SKIP
     // blocks this thread's event loop, which is the same loop the server needs
     // in order to answer curl's request.
     const exitCode = await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [dest, payloadPath], { stdio: "pipe" });
+      const child = spawn(process.execPath, [dest], { stdio: "pipe" });
+      child.stdin.end(readFileSync(payloadPath));
       let stderr = "";
       child.stderr.on("data", (chunk) => (stderr += chunk));
       child.on("error", reject);

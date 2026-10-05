@@ -8,6 +8,20 @@ and threw away the bytes already downloaded, and reported it as `network` ("cann
 A resumed 202 now fails with `pending`, like a fresh one, and the partial is rolled back to
 what was on disk before the request, so the retry resumes.
 
+**Caller credentials no longer touch the disk.** The URL and `headers` (a signed URL, an
+`Authorization: Bearer` token) used to sit in two `0600` files for a short window: the
+runner's payload in `<statusDir>/<id>.payload.json` until the runner read it, and curl's
+config in `<partPath>.curlrc`, beside the download, until curl's first output byte. A runner
+killed inside either window left the secret behind in plain text. Both now travel only
+through pipes: the payload on the runner's stdin, and curl's config on curl's (`curl -K -`).
+
+Consumer notice: **the runner and `startDownload` must come from the same release.** The
+runner now reads its payload from stdin, not from a path in argv. An extension that commits
+a copy of the runner (`assets/raycast-downloader-runner.js`) must re-copy it with this
+upgrade. A 0.2.0 runner started by 0.2.1 exits at once without transferring anything: the
+download sits at the `starting` status `startDownload` seeds until the dead runner is
+reconciled.
+
 ## 0.2.0
 
 **A failed download no longer leaves an orphaned `.part.state`.** A request that failed

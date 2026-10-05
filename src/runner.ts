@@ -7,11 +7,12 @@
  * MUST NOT import `@raycast/api`: this executes outside Raycast's host, where
  * that module does not resolve.
  *
- * Invoked as:  node runner.js <payloadJsonPath>
+ * Invoked as:  node runner.js   (the payload JSON arrives on stdin)
  *
- * The payload arrives via a 0600 FILE rather than argv because it carries the
- * download URL, which for signed-URL APIs is a bearer credential and argv is
- * world-readable through `ps`. The runner unlinks the payload immediately.
+ * The payload carries the download URL and the caller's headers, either of
+ * which can be a bearer credential. argv is world-readable through `ps`, and a
+ * file outlives a process killed before it can unlink it, so it comes through
+ * a pipe. curl's config is handed over the same way, for the same reason.
  */
 
 import { execFileSync, spawn } from "node:child_process";
@@ -27,7 +28,7 @@ import {
 import { dirname } from "node:path";
 
 import { buildCurlConfig, classifyCurlFailure, parseCurlMeter, parseWriteOut } from "./curl";
-import { rollbackPartial, writeSecretFile } from "./paths";
+import { rollbackPartial } from "./paths";
 import {
   clearPartialState,
   headerPath,
@@ -103,17 +104,13 @@ interface RunnerPayload {
 const HEARTBEAT_MS = 500;
 
 function main(): void {
-  const payloadPath = process.argv[2];
-  if (!payloadPath) {
-    process.exit(2);
-  }
-
-  const payload = JSON.parse(readFileSync(payloadPath, "utf8")) as RunnerPayload;
-  // The payload holds the signed URL; remove it from disk before transferring.
+  // Blocks until `startDownload` closes the pipe. Nothing to report a bad
+  // payload to: without it there is no id, so no status file to write.
+  let payload: RunnerPayload;
   try {
-    unlinkSync(payloadPath);
+    payload = JSON.parse(readFileSync(0, "utf8")) as RunnerPayload;
   } catch {
-    // Nothing to do — proceed rather than abandoning the download.
+    process.exit(2);
   }
 
   const startedAt = Date.now();
@@ -359,9 +356,9 @@ function main(): void {
 
   const followRedirects = payload.followRedirects ?? true;
 
-  let configPath: string;
+  let config: string;
   try {
-    const config = buildCurlConfig({
+    config = buildCurlConfig({
       url: payload.url,
       outputPath: payload.partPath,
       headers: payload.headers,
@@ -373,8 +370,6 @@ function main(): void {
       dumpHeaderPath: headerPath(payload.partPath),
       ifRange,
     });
-    configPath = `${payload.partPath}.curlrc`;
-    writeSecretFile(configPath, config);
   } catch (error) {
     // buildCurlConfig rejects control characters in the URL or headers.
     failSetup("validation", error);
@@ -387,29 +382,12 @@ function main(): void {
   // over. Cleared before curl can write a new one.
   discardHeaderDump(payload.partPath);
 
-  const child = spawn("curl", ["-K", configPath], { stdio: ["ignore", "pipe", "pipe"] });
-
-  // The config holds the download URL, which for signed-URL APIs is a bearer
-  // credential — so it comes off disk as soon as curl has read it.
-  //
-  // curl parses its config at startup (measured: unlinking 50ms after spawn
-  // still completes a full transfer), so the first byte of output is proof it
-  // no longer needs the file. The timer is only a fallback for a transfer that
-  // produces no output at all.
-  let configRemoved = false;
-  const removeConfig = (): void => {
-    if (configRemoved) return;
-    configRemoved = true;
-    try {
-      unlinkSync(configPath);
-    } catch {
-      // Already gone.
-    }
-  };
-  child.stderr?.once("data", removeConfig);
-  child.stdout?.once("data", removeConfig);
-  const configTimer = setTimeout(removeConfig, 2000);
-  configTimer.unref?.();
+  // `-K -`: the config holds the URL and headers, so it goes through curl's
+  // stdin, never argv or a file. curl reads it to EOF before it does anything.
+  const child = spawn("curl", ["-K", "-"], { stdio: ["pipe", "pipe", "pipe"] });
+  // curl failing to start closes the pipe; the `error` handler below reports it.
+  child.stdin?.on("error", () => {});
+  child.stdin?.end(config);
 
   persist({ state: "downloading", bytesDownloaded: existingBytes });
 
@@ -470,7 +448,6 @@ function main(): void {
 
   const finishCancelled = (): void => {
     clearInterval(heartbeat);
-    removeConfig();
     // Keep the .part file: cancellation should still allow a later resume — and
     // record what those bytes are, which is what MAKES the later resume safe.
     // Unless there are none, or they are not the file's.
@@ -492,7 +469,6 @@ function main(): void {
 
   child.on("error", (error) => {
     clearInterval(heartbeat);
-    removeConfig();
     settlePartial(undefined);
     releasePath();
     persist({
@@ -505,9 +481,6 @@ function main(): void {
 
   child.on("close", (exitCode, signal) => {
     clearInterval(heartbeat);
-    // Belt and braces: the listeners above normally win, but a transfer that
-    // produced no output at all must not leave the credential on disk.
-    removeConfig();
 
     const writeOut = parseWriteOut(stdout);
     const httpCode = writeOut.httpCode;
@@ -537,10 +510,6 @@ function main(): void {
     // failure, it is retained, re-recorded, and 416s again on every retry.
     const alreadyComplete =
       exitCode === 0 &&
-      //
-      // A 202 is excluded: it says the file is not ready yet, which says nothing
-      // against the bytes already on disk. `settlePartial` below rolls back any
-      // 202 body curl appended, and the retry resumes onto the real prefix.
       httpCode === 416 &&
       resume &&
       parseUnsatisfiedRangeTotal(readHeaderDump(payload.partPath) ?? "") === existingBytes &&
@@ -568,6 +537,10 @@ function main(): void {
       // And a resumed whole-body 2xx curl did NOT refuse: it exits 0 when that
       // body is exactly as long as the partial, keeping the partial — which, if
       // `If-Range` is what produced the 200, is the OLD version of the file.
+      //
+      // A 202 is excluded: it says the file is not ready yet, which says nothing
+      // against the bytes already on disk. `settlePartial` below rolls back any
+      // 202 body curl appended, and the retry resumes onto the real prefix.
       const rangeRefused =
         resume &&
         httpCode !== undefined &&

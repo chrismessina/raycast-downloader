@@ -130,7 +130,7 @@ test("startDownload writes followRedirects into the payload, and it yields a con
     writeFileSync(
       stub,
       `import { readFileSync, writeFileSync } from "node:fs";\n` +
-        `const payload = readFileSync(process.argv[2], "utf8");\n` +
+        `const payload = readFileSync(0, "utf8");\n` +
         `writeFileSync(${JSON.stringify(capture)}, payload);\n`,
     );
 
@@ -264,7 +264,8 @@ test("a legacy payload with no followRedirects field still follows redirects", a
         { mode: 0o600 },
       );
 
-      const child = spawn(process.execPath, [runnerPath(), payloadPath], { stdio: "ignore" });
+      const child = spawn(process.execPath, [runnerPath()], { stdio: ["pipe", "ignore", "ignore"] });
+      child.stdin.end(readFileSync(payloadPath));
       await new Promise((resolve) => child.on("close", resolve));
 
       const status = readStatus(id, dir);
