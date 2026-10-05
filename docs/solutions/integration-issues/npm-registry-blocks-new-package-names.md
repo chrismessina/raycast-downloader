@@ -167,4 +167,12 @@ fail — which is what makes the 404 so convincing. **Do not use a 404 to conclu
 not exist when you are authenticating.** The inverse also caught this session out: immediately
 after a *successful* publish, the packument 404s for several minutes (~4 here) while the versioned
 endpoint `https://registry.npmjs.org/<pkg>/<version>` already returns 200. That one is ordinary
-CDN propagation, not auth. Check the versioned endpoint before believing either 404.
+CDN propagation, not auth.
+
+**Since 0.2.0 (2026-09-30) the versioned endpoint lags too.** `npm publish` now ends with `npm
+notice Your package is being processed and may take a few minutes to become available.` before
+the `+ <pkg>@<version>` line. Until processing finishes, `GET …/<pkg>/<version>` answers
+`"version not found: <version>"` and `dist-tags.latest` still names the previous version. Both
+0.2.0 and 0.2.1 appeared within a few minutes. The `+ <pkg>@<version>` line is the proof the
+publish succeeded; to know when consumers can install it, poll `dist-tags.latest` (or `npm view
+<pkg> version --prefer-online`) rather than trusting either endpoint's first answer.

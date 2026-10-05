@@ -75,6 +75,10 @@ Provenance is recorded as soon as the response arrives rather than when the tran
 transfers that most need to be resumable are the ones that never end, so recording at the end would
 produce partials that can never be resumed precisely in the cases resuming exists for.
 
+Only the response that actually wrote the bytes may record it. A response that wrote nothing into
+the partial — an error, a whole body the transfer refused, a redirect hop — leaves the existing
+provenance in place, because the bytes it describes have not changed.
+
 ## Path claim
 
 A statement that one attempt is writing to a particular destination right now, held for as long as

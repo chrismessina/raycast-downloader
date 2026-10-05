@@ -24,11 +24,14 @@ tags:
 
 # `--location` does not guarantee a 2xx, and a 3xx is never a downloaded file
 
-> **Citations refreshed 2026-09-18.** Eight of the nine `file:line` references here pointed
-> at unrelated code after the 0.1.4 resume-safety work moved things in `runner.ts` and
-> `curl.ts`. Every one still *resolved* — in range, valid file — which is why a path checker
-> reports a document like this as clean. Each now names the symbol as well as the line, so
-> the next drift is visible to a reader rather than only to whoever re-runs the greps.
+> **Citations refreshed 2026-09-18 and again 2026-10-04.** Eight of the nine `file:line`
+> references here pointed at unrelated code after the 0.1.4 resume-safety work moved things in
+> `runner.ts` and `curl.ts`. Every one still *resolved* — in range, valid file — which is why a
+> path checker reports a document like this as clean. Each now names the symbol as well as the
+> line, so the next drift is visible to a reader rather than only to whoever re-runs the greps.
+> The 2026-10-04 pass also follows 0.2.0, which replaced the `httpOk` predicate and the
+> `redirectStub` rollback quoted below with a status-based rule. The guidance stands; the
+> mechanism moved, and the Solution names both.
 
 ## Problem
 
@@ -58,7 +61,7 @@ That stub is then renamed to the user's expected filename and recorded as `compl
 download the user asked for is 18 bytes of HTML wearing the name of a video.
 
 Two of the three defects were invisible from the runner alone. `followRedirects` was honored by
-the config builder (`src/curl.ts:145`, `lines.push("location")`) and defaulted there (`src/curl.ts:112`, the `followRedirects = true` default), but neither
+the config builder (`src/curl.ts:144`, `lines.push("location")`) and defaulted there (`src/curl.ts:111`, the `followRedirects = true` default), but neither
 `StartDownloadOptions` nor the runner payload carried the field, so nothing could reach it: the
 option was public, documented, and dead. And with the predicate fixed, an unfollowed 302 fell past
 the `>= 400` branch in `classifyCurlFailure`, past `EXIT_CODES[0]` (undefined), and into the
@@ -92,7 +95,7 @@ is not something a consumer can act on.
 
 ## Solution
 
-**Success is strictly 2xx, whatever `followRedirects` says** (`src/runner.ts:435`, the `httpOk` predicate):
+**Success is strictly 2xx, whatever `followRedirects` says.** As shipped in this fix:
 
 ```ts
 const httpOk = httpCode === undefined || (httpCode >= 200 && httpCode < 300);
@@ -102,12 +105,19 @@ const succeeded = exitCode === 0 && httpOk;
 Nothing legitimate is lost: when a transfer genuinely succeeds behind redirects, curl reports the
 2xx of the final hop.
 
-**Classify the 3xx, and word it for the case at hand** (`src/curl.ts:358`, and `unfollowedRedirectMessage` at `src/curl.ts:397`) —
+0.2.0 narrowed it further, by the same reasoning one band down: not every 2xx is the file either.
+202, 204, 205 and an unrequested 206 are refused too, and one 416 (a resume whose partial is
+already whole) is accepted. The predicate is now `wroteTheFile(httpCode)` (`src/runner.ts:518`,
+`httpOk`; the rule itself is `wroteTheFile` beside `settlePartial`). A 3xx is still never the file.
+
+**Classify the 3xx, and word it for the case at hand** (`src/curl.ts:364`, the 3xx branch in `classifyCurlFailure`, and `unfollowedRedirectMessage` at `src/curl.ts:428`) —
 unchanged (304), redirects disabled, or a redirect that could not be followed. The branch is gated
 on `exitCode === 0`, because curl exits **47** on a redirect *loop* while still reporting a 3xx
 `http_code`; an ungated branch relabels "Too many redirects" as "redirects are disabled".
 
-**Roll back whatever the 3xx wrote** (`src/runner.ts:454`, `redirectStub`). The redirect body is never resumable
+**Roll back whatever the 3xx wrote.** Shipped as a `redirectStub` branch; since 0.2.0 it is
+`settlePartial` (`src/runner.ts:332`), which applies the same rollback to every response that did
+not write the file, 3xx included. The redirect body is never resumable
 content, so a retry would `continue-at` past that HTML and splice the real file onto it — the
 exact silent corruption `fail` (rather than `fail-with-body`) exists to prevent, reached one step
 later. The rollback is a truncate back to the pre-attempt byte count when resuming, so a user's
@@ -119,7 +129,8 @@ resume rejects". That is an assumption about the consumer, and consumers accept 
 partial. A truncate that *throws* is obvious; one that leaves the file longer than asked is not,
 and only the second corrupts the next resume. `rollbackPartial` truncates, re-`stat`s, and
 discards the partial when it cannot vouch for the length — and when it can do neither, the runner
-reads that failure and says so in the status (`src/runner.ts:486`).
+reads that failure, marks the partial unsafe on disk (`src/runner.ts:345`, inside `settlePartial`),
+and says so in the status as `partialUnsafe`.
 
 ## Why this works
 
@@ -142,8 +153,8 @@ here is a green test that never exercised the new field — every test passes be
 happens to match. Two things are needed:
 
 ```js
-// 1. The option reaches the runner payload at all (a stub runner captures it
-//    before the real one unlinks it).
+// 1. The option reaches the runner payload at all (a stub runner captures the
+//    payload it reads from stdin).
 assert.equal(payload.followRedirects, false);
 
 // 2. And the behaviour differs end to end. This one fails if the plumbing is
@@ -153,7 +164,7 @@ assert.equal(status.state, "failed");
 
 Both live in `test/redirects.test.mjs`, alongside a **legacy-payload** test: a payload written by
 the previous version carries no `followRedirects` field, and the runner must read that absence as
-"follow" (`src/runner.ts:279`, `payload.followRedirects ?? true`). An in-flight download must not
+"follow" (`src/runner.ts:357`, `payload.followRedirects ?? true`). An in-flight download must not
 fail because the package was upgraded underneath it.
 
 **Test the 3xx band with a local server, not a live redirector.** `test/redirects.test.mjs` runs a
